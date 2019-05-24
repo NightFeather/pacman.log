@@ -1,0 +1,190 @@
+#!/usr/bin/env ruby
+
+require "time"
+require "optparse"
+require "optparse/time"
+
+class Package
+
+  @@list = {}
+
+  attr_reader :name, :events, :versions, :current_version
+
+  def self.list
+    @@list
+  end
+
+  def self.get name
+    @@list[name] ||= Package.new name: name
+  end
+
+  module PackageListAppend
+    def initialize name:
+      super(name: name)
+      self.class.list[name] ||= self
+    end
+  end
+
+  prepend PackageListAppend
+
+  class Event < Struct.new :name, :timestamp, :data
+    def method_missing meth, *args, &block
+      if data.key? meth
+        data[meth]
+      else
+        super
+      end
+    end
+
+    class Upgraded < Event
+      def initialize timestamp:, from:, to:, version:, **args
+        super("upgraded", timestamp, { from: from, to: to, version: version })
+      end
+
+      def to_s
+        "\e[1;32m+\e[m (#{timestamp}) #{version}"
+      end
+    end
+
+    class Downgraded < Event
+      def initialize timestamp:, from:, to:, version:, **args
+        super("downgraded", timestamp, { from: from, to: to, version: version })
+      end
+
+      def to_s
+        "\e[1;33m-\e[m (#{timestamp}) #{version}"
+      end
+    end
+
+    class Installed < Event
+      def initialize timestamp:, version:, **args
+        super("installed", timestamp, { version: version })
+      end
+
+      def to_s
+        "\e[1;37m*\e[m (#{timestamp}) #{version}"
+      end
+    end
+
+    class Removed < Event
+      attr_reader :from, :to
+      def initialize timestamp:, **args
+        super("removed", timestamp, { version: nil })
+      end
+
+      def to_s
+        "\e[1;30mx\e[m (#{timestamp}) #{version}"
+      end
+    end
+  end
+  def initialize name: 
+    @name = name
+    @events = []
+    @versions = []
+    @current_version = nil
+  end
+
+  def << ev
+    @events << ev
+    @current_version = ev.version
+    @versions << ev.version if ev.version
+  end
+
+  def display show_events = false
+    parts = [
+      "Package: #{@name}",
+      "Current: #{@current_version}"
+    ]
+    unless show_events
+      parts += [
+        "History:",
+        *(@versions.map { |v| "  #{v}" })
+      ]
+    else
+      parts += [
+        "Events:",
+        *(@events),
+      ]
+    end
+    parts.join("\n") + "\n\n"
+  end
+
+end
+
+options = {}
+
+OptionParser.new do |parser|
+  parser.on "-p", "--package REGEXP", Regexp, "Show packages match the regexp" do |opt|
+    options[:package] = opt
+  end
+
+  parser.on "-l", "--list", "List all packages" do
+    options[:list] = true
+  end
+
+  parser.on "-b", "--before TIME", Time, "Show events before given date" do |opt|
+    options[:before] = opt
+  end
+
+  parser.on "-a", "--after TIME", Time, "Show events after given date" do |opt|
+    options[:after] = opt
+  end
+
+  parser.on "-ev", "--events", "Show detailed events" do
+    options[:events] = true
+  end
+
+  parser.on_tail "-h", "--help", "Show this help" do
+    options[:help] = true
+    puts parser
+  end
+end.parse!
+
+events = []
+
+File.open("/var/log/pacman.log") do |f|
+  events = f.select { |l| l =~ /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[ALPM\] (?:upgraded|downgraded|installed|removed).+$/ }
+  .map(&:chomp)
+  .map { |l|
+    {
+      segs: (
+        l.scan(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\] \[ALPM\] (installed|removed|upgraded|downgraded) (.+?) \((.+?)(?: -> (.+?))?\)/).flatten
+      ), raw: l 
+    }
+  }.map { |o|
+    ts, act, pkgname, version, version1 = o[:segs]
+    {
+      segs: {
+        timestamp: Time.parse(ts),
+        act: act,
+        pkgname: pkgname,
+        from: version,
+        to: version1,
+        version: version1 || version
+      },
+      raw: o[:raw]
+    }
+  }
+
+  if options.key? :after
+    events.select! { |ev| ev[:segs][:timestamp] > options[:after] }
+  end
+
+  if options.key? :before
+    events.select! { |ev| ev[:segs][:timestamp] <= options[:before] }
+  end
+
+  events.each do |stat|
+    pkg = Package.get stat[:segs][:pkgname]
+    pkg << Package::Event.const_get(stat[:segs][:act].capitalize).new(**stat[:segs])
+  end
+end
+
+if options.key? :package
+  Package.list.select { |k,v| k =~ options[:package] }.each { |k, v| puts v.display(options[:events]) }
+elsif options[:list]
+  Package.list.map { |_, v| puts v.display(options[:events]) }
+elsif not options.key? :help
+  puts "Missing argument"
+  puts "see -h"
+end
