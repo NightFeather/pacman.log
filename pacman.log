@@ -42,7 +42,7 @@ class Package
       end
 
       def to_s
-        "\e[1;32m+\e[m (#{timestamp}) #{version}"
+        "\e[1;32m+\e[m (#{timestamp}) #{from} -> #{to}"
       end
     end
 
@@ -52,7 +52,7 @@ class Package
       end
 
       def to_s
-        "\e[1;33m-\e[m (#{timestamp}) #{version}"
+        "\e[1;33m-\e[m (#{timestamp}) #{from} -> #{to}"
       end
     end
 
@@ -113,42 +113,46 @@ end
 
 options = {}
 
-OptionParser.new do |parser|
-  parser.on "-p", "--package REGEXP", Regexp, "Show packages match the regexp" do |opt|
+parser = OptionParser.new do |_parser|
+  _parser.on "-p", "--package REGEXP", Regexp, "Show packages match the regexp" do |opt|
     options[:package] = opt
   end
 
-  parser.on "-l", "--list", "List all packages" do
+  _parser.on "-l", "--list", "List all packages" do
     options[:list] = true
   end
 
-  parser.on "-b", "--before TIME", Time, "Show events before given date" do |opt|
+  _parser.on "-b", "--before TIME", Time, "Show events before given date" do |opt|
     options[:before] = opt
   end
 
-  parser.on "-a", "--after TIME", Time, "Show events after given date" do |opt|
+  _parser.on "-a", "--after TIME", Time, "Show events after given date" do |opt|
     options[:after] = opt
   end
 
-  parser.on "-ev", "--events", "Show detailed events" do
+  _parser.on "-e", "--events", "Show detailed events" do
     options[:events] = true
   end
 
-  parser.on_tail "-h", "--help", "Show this help" do
+  _parser.on_tail "-h", "--help", "Show this help" do
     options[:help] = true
-    puts parser
   end
-end.parse!
+end
+
+parser.parse!
 
 events = []
 
 File.open("/var/log/pacman.log") do |f|
-  events = f.select { |l| l =~ /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[ALPM\] (?:upgraded|downgraded|installed|removed).+$/ }
-  .map(&:chomp)
+  events = f.select { |l|
+    l =~ /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\] \[ALPM\] (?:upgraded|downgraded|installed|removed).+$/ ||
+    l =~ /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{4}\] \[ALPM\] (?:upgraded|downgraded|installed|removed).+$/
+  }.map(&:chomp)
   .map { |l|
     {
       segs: (
-        l.scan(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\] \[ALPM\] (installed|removed|upgraded|downgraded) (.+?) \((.+?)(?: -> (.+?))?\)/).flatten
+        l.scan(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\] \[ALPM\] (installed|removed|upgraded|downgraded) (.+?) \((.+?)(?: -> (.+?))?\)/).flatten+
+        l.scan(/^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{4})\] \[ALPM\] (upgraded|downgraded|installed|removed) (.+?) \((.+?)(?: -> (.+?))?\)$/).flatten
       ), raw: l 
     }
   }.map { |o|
@@ -184,7 +188,6 @@ if options.key? :package
   Package.list.select { |k,v| k =~ options[:package] }.each { |k, v| puts v.display(options[:events]) }
 elsif options[:list]
   Package.list.map { |_, v| puts v.display(options[:events]) }
-elsif not options.key? :help
-  puts "Missing argument"
-  puts "see -h"
+elsif options.empty? or options[:help]
+  puts parser
 end
